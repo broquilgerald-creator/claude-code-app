@@ -63,19 +63,47 @@ claude-code-app/
 
 ---
 
+### **Session 2: Implementation & Deployment** - 2025-06-27 → 2025-06-28
+
+#### **Achievements**:
+- ✅ **Flutter app implemented** (`mobile_app/`: models, providers, screens, services) with web build
+- ✅ **Go WebSocket proxy server** (`proxy-server/`) bridging the app to the Claude-Code CLI
+- ✅ **Deployed to testing**: Flutter web on port 64007, proxy on port 64008 (`ws://<host>:64008/ws`)
+- ✅ **Persistent Claude-Code CLI session** with conversation memory (persistent bash, stdin/stdout pipes, auto-start after auth)
+- ✅ **Terminal-style UI** replacing chat bubbles (blue prompts, green output, yellow system messages, timestamps)
+- ✅ **Proxy switched to `claude --print`** for reliable responses
+
+#### **Decisions**:
+- Run the proxy directly inside the Claude-Code container (no SSH hop for now)
+- Terminal-style UI to mirror the CLI experience
+- External port mapping: 8080→63980, plus 64007 (web) and 64008 (proxy)
+
+### **Session 3: WebSocket Debugging & Fixes** - 2025-06-28 → 2025-06-29
+
+#### **Achievements**:
+- ✅ Added extensive WebSocket debug logging (raw data, JSON parsing, forwarding to AppState)
+- ✅ Built HTML/Node test clients (`test-websocket*.html`, `test-ws.html`, `flutter-mimic-test.html`, `test-websocket-node.js`, `test-client.js`) and debug scripts (`debug-claude.sh`, `test-simple.sh`)
+- ✅ **Fixed StreamController lifecycle bug** that prevented messages displaying; added a persistent message controller that survives reconnections
+- ✅ Fixed web-deployment WebSocket URL construction (uses host IP); pre-filled test credentials
+- ✅ Docs: `TESTING.md`, `TESTING-READY.md`, `DEPLOYMENT.md`, `debug-steps.md`
+
+#### **Status**: End-to-end flow works: Proxy → WebSocketService → AppState → UI. Claude responses now render in the app.
+
+---
+
 ## 🎯 Development Phases
 
-### **Phase 1: Foundation** (Weeks 1-2) - *Current Phase*
+### **Phase 1: Foundation** (Weeks 1-2)
 - [x] Project planning and documentation
 - [x] Architecture design
-- [ ] Flutter project initialization
-- [ ] SSH connection management
-- [ ] Basic Docker deployment
+- [x] Flutter project initialization
+- [ ] SSH connection management (deferred; proxy runs in-container)
+- [x] Basic Docker deployment
 
-### **Phase 2: Core Features** (Weeks 3-4)
-- [ ] Claude-Code CLI integration
-- [ ] Real-time command execution
-- [ ] Session persistence
+### **Phase 2: Core Features** (Weeks 3-4) - *Current Phase*
+- [x] Claude-Code CLI integration
+- [x] Real-time command execution
+- [~] Session persistence (CLI session persists; app-side resume still to do)
 - [ ] Project management basics
 
 ### **Phase 3: Enhanced UX** (Weeks 5-6)
@@ -109,12 +137,28 @@ claude-code-app/
 - **Decision**: WebSockets for real-time CLI interaction
 - **Rationale**: Low latency, bidirectional communication
 - **Fallback**: HTTP polling for reliability
+- **Status 2025-06-29**: Implemented via Go proxy (port 64008) + Flutter `WebSocketService`
 
 ---
 
 ## 🐛 Issues & Solutions Log
 
-*No issues encountered yet - will track all problems and solutions here*
+### **Dropped / half-dead connections** - 2026-10-02
+- **Symptoms**: Sessions silently dying, state flipping to "disconnected" after reconnect, apostrophes in prompts breaking commands
+- **Fixes (proxy)**: ping/read-deadline keep-alive so dead sockets get cleaned up; token auth now also starts the Claude session; prompt passed on stdin (no `sh -c` / shell injection); `claude --print --continue` so context survives reconnects
+- **Fixes (app)**: ignore events from replaced sockets; 20s ping; auto-reconnect with exponential backoff (max 30s); manual disconnect stops reconnecting
+- **Not verified**: no Dart/Flutter SDK in the cloud container; `go vet` passes. Needs a test on the real deployment.
+
+### **Messages not displaying in Flutter UI** - 2025-06-29
+- **Symptom**: Proxy logged successful sends, but nothing appeared in the app
+- **Cause**: `StreamController` lifecycle tied to connection; messages lost across reconnects
+- **Fix**: Persistent message controller surviving reconnections
+
+### **Web build connected to wrong WebSocket URL** - 2025-06-29
+- **Fix**: Build the URL from the serving host IP instead of localhost
+
+### **Unreliable interactive CLI output** - 2025-06-28
+- **Fix**: Use `claude --print` mode in the proxy
 
 ---
 
@@ -141,12 +185,12 @@ claude-code-app/
 - [ ] API documentation
 - [ ] User guide
 
-### **Development Progress**: 15%
+### **Development Progress**: ~45%
 - [x] Planning phase
 - [x] Documentation
-- [ ] Core implementation
-- [ ] Testing
-- [ ] Deployment
+- [~] Core implementation (Flutter app + Go proxy working; SSH, voice, background tasks pending)
+- [~] Testing (manual/HTML clients; no automated suite)
+- [~] Deployment (test deployment on 64007/64008)
 
 ---
 
@@ -167,17 +211,17 @@ claude-code-app/
 ## 🔄 Session Handover Notes
 
 ### **For Next Session**:
-1. **Priority**: Initialize Flutter project structure
-2. **Context**: All planning and documentation complete
-3. **Blockers**: None currently identified
-4. **Resources**: Docker infrastructure ready for testing
+1. **Priority**: Authentication hardening (replace hard-coded test credentials / pre-filled login)
+2. **Next**: Session persistence/resume in the app, then SSH connection management
+3. **Then**: Voice-to-text, background processing, push notifications
+4. **Blockers**: None identified; test deployment is at ports 64007 (web) / 64008 (proxy)
 
-### **Development Environment Ready**:
+### **Environment Status**:
 - ✅ Docker container definitions
-- ✅ Project documentation
-- ✅ Development plan
-- ✅ Architecture decisions
+- ✅ Flutter app + Go proxy working end to end
+- ✅ Debug/test tooling (HTML + Node clients)
+- ⚠️ Test credentials are hard-coded for testing only
 
 ---
 
-*Last updated: 2025-06-27 | Next update: After Flutter initialization*
+*Last updated: 2026-10-02 | Next update: After auth hardening / session resume*

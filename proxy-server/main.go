@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -53,6 +54,14 @@ type Claims struct {
 	Username string `json:"username"`
 	jwt.RegisteredClaims
 }
+
+// Keep-alive timing: clients send a JSON "ping" every ~20s, so a connection
+// silent for readTimeout is dead and gets cleaned up.
+const (
+	readTimeout  = 60 * time.Second
+	pingInterval = 25 * time.Second
+	writeTimeout = 10 * time.Second
+)
 
 // Session management
 type Session struct {
@@ -194,6 +203,7 @@ func (s *Session) sendMessage(msg WSMessage) {
 	defer s.mutex.Unlock()
 
 	log.Printf("[%s] Sending message type=%s data=%s", s.ID, msg.Type, msg.Data)
+	s.WebSocket.SetWriteDeadline(time.Now().Add(writeTimeout))
 	if err := s.WebSocket.WriteJSON(msg); err != nil {
 		log.Printf("[%s] Error sending message: %v", s.ID, err)
 	} else {
@@ -210,6 +220,29 @@ func (s *Session) sendError(message string) {
 }
 
 func (s *Session) handleMessages() {
+	s.WebSocket.SetReadDeadline(time.Now().Add(readTimeout))
+	s.WebSocket.SetPongHandler(func(string) error {
+		return s.WebSocket.SetReadDeadline(time.Now().Add(readTimeout))
+	})
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				deadline := time.Now().Add(writeTimeout)
+				if err := s.WebSocket.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
 	for {
 		messageType, message, err := s.WebSocket.ReadMessage()
 		if err != nil {
@@ -218,6 +251,7 @@ func (s *Session) handleMessages() {
 			}
 			break
 		}
+		s.WebSocket.SetReadDeadline(time.Now().Add(readTimeout))
 
 		// Handle ping/pong for keep-alive
 		if messageType == websocket.PingMessage {
@@ -296,6 +330,7 @@ func (s *Session) handleAuth(msg WSMessage) {
 				Message: fmt.Sprintf("Welcome back, %s!", s.Username),
 				User:    s.Username,
 			})
+			s.startPersistentClaudeSession()
 		} else {
 			log.Printf("[%s] Token validation failed", s.ID)
 			s.sendError("Token validation failed")
@@ -383,9 +418,13 @@ func (s *Session) sendToClaudeSession(command string) {
 
 	// Execute Claude command in print mode for reliable output
 	go func() {
-		// Change to /app directory and run claude with the command
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("cd /app && echo '%s' | claude --print", command))
-		
+		// Prompt goes on stdin (no shell, so quotes can't break or inject).
+		// --continue resumes the latest conversation in /app so context
+		// survives reconnects.
+		cmd := exec.Command("claude", "--print", "--continue")
+		cmd.Dir = "/app"
+		cmd.Stdin = strings.NewReader(command)
+
 		output, err := cmd.Output()
 		if err != nil {
 			log.Printf("[%s] Error executing Claude command: %v", s.ID, err)
