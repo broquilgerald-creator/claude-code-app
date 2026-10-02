@@ -143,6 +143,12 @@ claude-code-app/
 
 ## 🐛 Issues & Solutions Log
 
+### **Dropped / half-dead connections** - 2026-10-02
+- **Symptoms**: Sessions silently dying, state flipping to "disconnected" after reconnect, apostrophes in prompts breaking commands
+- **Fixes (proxy)**: ping/read-deadline keep-alive so dead sockets get cleaned up; token auth now also starts the Claude session; prompt passed on stdin (no `sh -c` / shell injection); `claude --print --continue` so context survives reconnects
+- **Fixes (app)**: ignore events from replaced sockets; 20s ping; auto-reconnect with exponential backoff (max 30s); manual disconnect stops reconnecting
+- **Not verified**: no Dart/Flutter SDK in the cloud container; `go vet` passes. Needs a test on the real deployment.
+
 ### **Messages not displaying in Flutter UI** - 2025-06-29
 - **Symptom**: Proxy logged successful sends, but nothing appeared in the app
 - **Cause**: `StreamController` lifecycle tied to connection; messages lost across reconnects
