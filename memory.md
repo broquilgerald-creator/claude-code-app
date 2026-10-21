@@ -224,4 +224,9 @@ claude-code-app/
 
 ---
 
+## 📋 CDP Store 968 – see `CDP_PROBLEMS_LOG.md`
+Full list of standing rules, open problems and past mistakes for the November CDP binder (saved 2026-10-21).
+
+---
+
 *Last updated: 2026-10-02 | Next update: After auth hardening / session resume*
