@@ -17,13 +17,29 @@ class WebSocketService {
   String? _authToken;
   bool _isConnected = false;
 
+  // Keep-alive / auto-reconnect state
+  static const _pingEvery = Duration(seconds: 20);
+  static const _maxBackoff = Duration(seconds: 30);
+  Timer? _pingTimer;
+  Timer? _reconnectTimer;
+  ConnectionConfig? _lastConfig;
+  bool _manualDisconnect = false;
+  int _reconnectAttempts = 0;
+
   Stream<Map<String, dynamic>> get messageStream => _messageController.stream;
   bool get isConnected => _isConnected;
   ConnectionConfig? get currentConnection => _currentConnection;
 
   Future<bool> connect(ConnectionConfig config) async {
+    _manualDisconnect = false;
+    _lastConfig = config;
+    _reconnectAttempts = 0;
+    return _connectOnce(config);
+  }
+
+  Future<bool> _connectOnce(ConnectionConfig config) async {
     try {
-      disconnect();
+      _teardown();
 
       // Create WebSocket connection
       String wsUrl = config.serverUrl.replaceFirst('http', 'ws') + '/ws';
@@ -35,13 +51,16 @@ class WebSocketService {
       }
       
       print('🔗 WebSocketService: Connecting to $wsUrl');
-      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      final channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      _channel = channel;
       
       // Message controller is already created in constructor
 
       // Listen to incoming messages
-      _channel!.stream.listen(
+      // Events from a replaced socket must not touch the new connection's state.
+      channel.stream.listen(
         (data) {
+          if (!identical(channel, _channel)) return;
           print('📨 WebSocketService: Raw data received: $data');
           try {
             final message = jsonDecode(data) as Map<String, dynamic>;
@@ -53,10 +72,12 @@ class WebSocketService {
           }
         },
         onError: (error) {
+          if (!identical(channel, _channel)) return;
           print('💥 WebSocketService: WebSocket error: $error');
           _handleConnectionError(error);
         },
         onDone: () {
+          if (!identical(channel, _channel)) return;
           print('🔌 WebSocketService: WebSocket connection closed');
           _handleDisconnection();
         },
@@ -67,14 +88,16 @@ class WebSocketService {
       if (authSuccess) {
         _currentConnection = config.copyWith(isConnected: true);
         _isConnected = true;
+        _reconnectAttempts = 0;
+        _startPing();
         return true;
       } else {
-        disconnect();
+        _teardown();
         return false;
       }
     } catch (e) {
       print('Connection failed: $e');
-      disconnect();
+      _teardown();
       return false;
     }
   }
@@ -144,12 +167,54 @@ class WebSocketService {
   }
 
   void _handleDisconnection() {
+    _pingTimer?.cancel();
+    final wasConnected = _isConnected;
     _isConnected = false;
     _currentConnection = _currentConnection?.copyWith(isConnected: false);
     _messageController.add({
       'type': 'system',
       'message': 'Disconnected from server',
       'timestamp': DateTime.now().toIso8601String(),
+    });
+    // Only auto-reconnect a link that was established; failed first attempts
+    // are reported to the caller of connect() instead.
+    if (wasConnected) _scheduleReconnect();
+  }
+
+  void _startPing() {
+    _pingTimer?.cancel();
+    _pingTimer = Timer.periodic(_pingEvery, (_) => sendPing());
+  }
+
+  void _scheduleReconnect() {
+    final config = _lastConfig;
+    if (_manualDisconnect || config == null) return;
+    _reconnectTimer?.cancel();
+
+    final seconds = (1 << _reconnectAttempts.clamp(0, 5).toInt());
+    final delay = Duration(seconds: seconds) > _maxBackoff
+        ? _maxBackoff
+        : Duration(seconds: seconds);
+    _reconnectAttempts++;
+
+    _messageController.add({
+      'type': 'system',
+      'message': 'Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts)...',
+      'timestamp': DateTime.now().toIso8601String(),
+    });
+
+    _reconnectTimer = Timer(delay, () async {
+      if (_manualDisconnect) return;
+      final ok = await _connectOnce(config);
+      if (ok) {
+        _messageController.add({
+          'type': 'system',
+          'message': 'Reconnected to server.',
+          'timestamp': DateTime.now().toIso8601String(),
+        });
+      } else {
+        _scheduleReconnect();
+      }
     });
   }
 
@@ -198,7 +263,15 @@ class WebSocketService {
     });
   }
 
+  /// User-initiated disconnect: stops keep-alive and auto-reconnect.
   void disconnect() {
+    _manualDisconnect = true;
+    _reconnectTimer?.cancel();
+    _teardown();
+  }
+
+  void _teardown() {
+    _pingTimer?.cancel();
     _channel?.sink.close();
     // Don't close the message controller to keep the stream alive for reconnections
     
